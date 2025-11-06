@@ -13,7 +13,7 @@
 #include "src/hash_set_base.h"
 
 
-
+// One global mutex protects the entire table for Add/Remove/Contains/Size.
 template <typename T>
 class HashSetCoarseGrained : public HashSetBase<T> {
  public:
@@ -21,6 +21,8 @@ class HashSetCoarseGrained : public HashSetBase<T> {
       : buckets_(std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
         size_(0) {}
 
+
+  // Entire operation under the global lock.
   bool Add(T elem) final {
     std::scoped_lock lock(mutex_);
     size_t i = Index(elem);
@@ -36,6 +38,7 @@ class HashSetCoarseGrained : public HashSetBase<T> {
     return true;
   }
 
+  // Entire operation under the global lock.
   bool Remove(T elem) final {
     std::scoped_lock lock(mutex_);
     size_t i = Index(elem);
@@ -51,21 +54,21 @@ class HashSetCoarseGrained : public HashSetBase<T> {
     }
     return true;
   }
-
+  // Entire operation under the global lock.
   [[nodiscard]] bool Contains(T elem) final {
     std::scoped_lock lock(mutex_);
     size_t i = Index(elem);
     auto & b = buckets_[i];
     return std::find(b.begin(), b.end(), elem) != b.end();
   }
-
+  // Entire operation under the global lock.
   [[nodiscard]] size_t Size() const final {
     std::scoped_lock lock(mutex_);
     return size_;
   }
  private:
   
-  mutable std::mutex mutex_;
+  mutable std::mutex mutex_;// Global lock guarding all state
   std::vector<std::vector<T>> buckets_;
   size_t size_;
   std::hash<T> hasher_;
@@ -85,9 +88,8 @@ class HashSetCoarseGrained : public HashSetBase<T> {
     return static_cast<double>(size_) / static_cast<double>(buckets_.size());
   }
 
-
+  // Resize assumes the caller already holds mutex_ (no re-entrant locking).
   void Resize(size_t new_capacity) {
-    std::scoped_lock lock(mutex_);
     std::vector<std::vector<T>> new_buckets(new_capacity);
     for (auto& bucket : buckets_) {
       for (auto& v : bucket) {

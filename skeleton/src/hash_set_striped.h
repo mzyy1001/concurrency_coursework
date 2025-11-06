@@ -13,17 +13,18 @@
 #include "src/hash_set_base.h"
 
 
-
+// Fixed number of mutexes (locks_), independent from the number of buckets.
+// Each bucket maps to a stripe: stripe = bucket % locks_.size().
 template <typename T>
 class HashSetStriped : public HashSetBase<T> {
  public:
   explicit HashSetStriped(size_t initial_capacity, size_t stripes = 64)
       : buckets_(std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
         size_(0),
-        locks_(stripes) {}
+        locks_(stripes ? stripes : 64) {} // avoid zero stripes
 
   
-
+  // Insert under the corresponding stripe lock.
   bool Add(T elem) final {
     size_t i = Index(elem);
     size_t stripe = StripeOfBucket(i);
@@ -42,6 +43,8 @@ class HashSetStriped : public HashSetBase<T> {
     return true;
   }
 
+
+   // Insert under the corresponding stripe lock.
   bool Remove(T elem) final {
     size_t i = Index(elem);
     size_t stripe = StripeOfBucket(i);
@@ -61,6 +64,8 @@ class HashSetStriped : public HashSetBase<T> {
     return true;
   }
 
+
+   // Insert under the corresponding stripe lock.
   [[nodiscard]] bool Contains(T elem) final {
     size_t i = Index(elem);
     size_t stripe = StripeOfBucket(i);
@@ -71,13 +76,15 @@ class HashSetStriped : public HashSetBase<T> {
     }
   }
 
+
+   // Atomic size is sufficient; stripe locks protect structural changes.
   [[nodiscard]] size_t Size() const final {
     return size_.load(std::memory_order_relaxed);
   }
  private:
 
   std::vector<std::vector<T>> buckets_;
-  std::atomic<size_t> size_; 
+  std::atomic<size_t> size_;  // Updated inside stripe CS; relaxed is OK
   std::hash<T> hasher_;
   std::vector<std::mutex> locks_;
 
@@ -88,15 +95,19 @@ class HashSetStriped : public HashSetBase<T> {
     return cap == 0 ? kMinBuckets : cap;
   }
 
+
+  
   size_t Index(const T& elem) const {
     return hasher_(elem) % buckets_.size();
   }
 
+
+  // Map bucket to a stripe (lock index).
   size_t StripeOfBucket(size_t b) const { 
     return b % locks_.size(); 
   }
 
-
+  // Approximate load factor; exactness not required for triggering resize.
   double LoadFactor() const {
     return static_cast<double>(size_.load(std::memory_order_relaxed)) / static_cast<double>(buckets_.size());
   }
@@ -104,7 +115,7 @@ class HashSetStriped : public HashSetBase<T> {
 
   void Resize(size_t new_capacity) {
     for (auto& lock : locks_) {
-      lock.lock();
+      lock.lock(); // Acquire all stripe locks in a fixed order to avoid deadlock.
     }
     std::vector<std::vector<T>> new_buckets(new_capacity);
     for (auto& bucket : buckets_) {
@@ -115,11 +126,10 @@ class HashSetStriped : public HashSetBase<T> {
     }
     buckets_.swap(new_buckets);
     for (auto& lock : locks_) {
-      lock.unlock();
+      lock.unlock();// Release in reverse order (conventional; not strictly necessary).
     }
   }
 
 
 };
-
-#endif  // HASH_SET_COARSE_GRAINED_H
+#endif  // HASH_SET_STRIPED_H
