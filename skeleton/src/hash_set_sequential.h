@@ -1,13 +1,13 @@
 #ifndef HASH_SET_SEQUENTIAL_H
 #define HASH_SET_SEQUENTIAL_H
 
-
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <functional>
 #include <utility>
-#include <vector> 
-#include <cassert>
+#include <vector>
+
 #include "src/hash_set_base.h"
 
 template <typename T>
@@ -15,7 +15,8 @@ class HashSetSequential : public HashSetBase<T> {
  public:
   explicit HashSetSequential(size_t initial_capacity)
       // Ensure at least kMinBuckets buckets to avoid modulo-by-zero.
-      : buckets_(std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
+      : buckets_(
+            std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
         size_(0) {}
   // Returns true if elem was newly inserted.
   bool Add(T elem) final {
@@ -32,7 +33,7 @@ class HashSetSequential : public HashSetBase<T> {
     }
     return true;
   }
-  //Returns true if elem existed and was removed.
+  // Returns true if elem existed and was removed.
   bool Remove(T elem) final {
     size_t i = Index(elem);
     auto& b = buckets_[i];
@@ -65,7 +66,6 @@ class HashSetSequential : public HashSetBase<T> {
   double LoadFactor() const {
     return static_cast<double>(size_) / static_cast<double>(buckets_.size());
   }
-
 
   // Rehash all elements into a table with new_cap buckets.
   void Resize(size_t new_cap) {

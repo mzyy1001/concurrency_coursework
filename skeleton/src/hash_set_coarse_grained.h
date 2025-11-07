@@ -1,33 +1,31 @@
 #ifndef HASH_SET_COARSE_GRAINED_H
 #define HASH_SET_COARSE_GRAINED_H
 
+#include <algorithm>  // std::find
 #include <cassert>
-#include <algorithm>   // std::find
 #include <cstddef>     // size_t
 #include <functional>  // std::hash
 #include <mutex>       // std::mutex, std::scoped_lock
 #include <utility>     // std::move
 #include <vector>      // std::vector
 
-
 #include "src/hash_set_base.h"
-
 
 // One global mutex protects the entire table for Add/Remove/Contains/Size.
 template <typename T>
 class HashSetCoarseGrained : public HashSetBase<T> {
  public:
   explicit HashSetCoarseGrained(size_t initial_capacity)
-      : buckets_(std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
+      : buckets_(
+            std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
         size_(0) {}
-
 
   // Entire operation under the global lock.
   bool Add(T elem) final {
     std::scoped_lock lock(mutex_);
     size_t i = Index(elem);
-    auto & b = buckets_[i];
-    if(std::find(b.begin(), b.end(), elem) != b.end()) {
+    auto& b = buckets_[i];
+    if (std::find(b.begin(), b.end(), elem) != b.end()) {
       return false;
     }
     b.push_back(std::move(elem));
@@ -42,7 +40,7 @@ class HashSetCoarseGrained : public HashSetBase<T> {
   bool Remove(T elem) final {
     std::scoped_lock lock(mutex_);
     size_t i = Index(elem);
-    auto & b = buckets_[i];
+    auto& b = buckets_[i];
     auto it = std::find(b.begin(), b.end(), elem);
     if (it == b.end()) {
       return false;
@@ -58,7 +56,7 @@ class HashSetCoarseGrained : public HashSetBase<T> {
   [[nodiscard]] bool Contains(T elem) final {
     std::scoped_lock lock(mutex_);
     size_t i = Index(elem);
-    auto & b = buckets_[i];
+    auto& b = buckets_[i];
     return std::find(b.begin(), b.end(), elem) != b.end();
   }
   // Entire operation under the global lock.
@@ -66,9 +64,9 @@ class HashSetCoarseGrained : public HashSetBase<T> {
     std::scoped_lock lock(mutex_);
     return size_;
   }
+
  private:
-  
-  mutable std::mutex mutex_;// Global lock guarding all state
+  mutable std::mutex mutex_;  // Global lock guarding all state
   std::vector<std::vector<T>> buckets_;
   size_t size_;
   std::hash<T> hasher_;
@@ -80,9 +78,7 @@ class HashSetCoarseGrained : public HashSetBase<T> {
     return cap == 0 ? kMinBuckets : cap;
   }
 
-  size_t Index(const T& elem) const {
-    return hasher_(elem) % buckets_.size();
-  }
+  size_t Index(const T& elem) const { return hasher_(elem) % buckets_.size(); }
 
   double LoadFactor() const {
     return static_cast<double>(size_) / static_cast<double>(buckets_.size());
@@ -98,10 +94,7 @@ class HashSetCoarseGrained : public HashSetBase<T> {
       }
     }
     buckets_.swap(new_buckets);
-
   }
-
-
 };
 
 #endif  // HASH_SET_COARSE_GRAINED_H
