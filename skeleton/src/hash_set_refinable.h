@@ -13,11 +13,8 @@
 
 #include "src/hash_set_base.h"
 
-// Refinable hash set: one lock per bucket, and the lock array resizes
-// together with the bucket array. Synchronization follows the refinable
-// approach: operations take only the corresponding bucket lock, and detect
-// concurrent resizes via a version stamp; resizing grabs all bucket locks in
-// a fixed order (but no global read/write lock is used for normal ops).
+// Refinable hash set: one lock per bucket.
+// Lock array is resized along with the bucket array.
 template <typename T>
 class HashSetRefinable : public HashSetBase<T> {
  public:
@@ -38,13 +35,16 @@ class HashSetRefinable : public HashSetBase<T> {
       WaitIfResizingByOther();
       size_t ver_before = version_.load(std::memory_order_acquire);
       size_t cap = buckets_.size();
-      size_t i = hasher_(elem) % cap;
+      size_t i = Index(elem);
+
       std::unique_lock<std::mutex> bucket_lk(locks_[i]);
-      // If a resize started or completed, retry with the new layout.
-      if (ver_before != version_.load(std::memory_order_acquire) ||
-          IsResizingByOther()) {
-        continue;  // Table changed; retry with current layout.
+
+      // Check if resize happened after we computed index but before we locked.
+      if (version_.load(std::memory_order_acquire) != ver_before) {
+        continue;
       }
+
+      // Hash set add logic.
       auto& b = buckets_[i];
       if (std::find(b.begin(), b.end(), elem) != b.end()) {
         return false;
@@ -54,63 +54,66 @@ class HashSetRefinable : public HashSetBase<T> {
       used_cap = cap;
       break;
     }
-    // Estimate load factor using the capacity we operated under to avoid
-    // racing with concurrent resize.
+
+    // Estimate load factor using the capacity we operated under to trigger resizes.
     double lf = static_cast<double>(size_.load(std::memory_order_relaxed)) /
                 static_cast<double>(used_cap);
-    if (!IsResizingByOther() && lf > kMaxLoadFactor) {
+    if (!resizing_.load(std::memory_order_acquire) && lf > kMaxLoadFactor) {
       Resize(used_cap * 2);
     }
+
     return true;
   }
 
+  // Remove by locking the bucket; retry if a resize intervenes.
   bool Remove(T elem) final {
-    size_t used_cap = 0;
     while (true) {
+      // Avoid starting an operation while another thread is resizing.
       WaitIfResizingByOther();
       size_t ver_before = version_.load(std::memory_order_acquire);
-      size_t cap = buckets_.size();
-      size_t i = hasher_(elem) % cap;
+      size_t i = Index(elem);
+
       std::unique_lock<std::mutex> bucket_lk(locks_[i]);
-      if (ver_before != version_.load(std::memory_order_acquire) ||
-          IsResizingByOther()) {
-        continue;  // Table changed; retry with current layout.
+
+      // Check if resize happened after we computed index but before we locked.
+      if (version_.load(std::memory_order_acquire) != ver_before) {
+        continue;
       }
+
+      // Hash set remove logic.
       auto& b = buckets_[i];
-      auto it = std::find(b.begin(), b.end(), elem);
-      if (it == b.end()) {
+      auto item = std::find(b.begin(), b.end(), elem);
+      if (item == b.end()) {
         return false;
       }
-      b.erase(it);
+      b.erase(item);
       size_.fetch_sub(1, std::memory_order_relaxed);
-      used_cap = cap;
       break;
-    }
-    double lf = static_cast<double>(size_.load(std::memory_order_relaxed)) /
-                static_cast<double>(used_cap);
-    if (!IsResizingByOther() && lf < kMinLoadFactor) {
-      Resize(std::max(kMinBuckets, used_cap / 2));
     }
     return true;
   }
 
+  // Check elem by locking the bucket; retry if a resize intervenes.
   [[nodiscard]] bool Contains(T elem) final {
     while (true) {
+      // Avoid starting an operation while another thread is resizing.
       WaitIfResizingByOther();
       size_t ver_before = version_.load(std::memory_order_acquire);
-      size_t cap = buckets_.size();
-      size_t i = hasher_(elem) % cap;
+      size_t i = Index(elem);
+
       std::unique_lock<std::mutex> bucket_lk(locks_[i]);
-      if (ver_before != version_.load(std::memory_order_acquire) ||
-          IsResizingByOther()) {
-        continue;  // Table changed; retry with current layout.
+
+      // Check if resize happened after we computed index but before we locked.
+      if (version_.load(std::memory_order_acquire) != ver_before) {
+        continue;
       }
+
       auto& b = buckets_[i];
       return std::find(b.begin(), b.end(), elem) != b.end();
     }
   }
 
-  // Atomic size is sufficient; table/bucket locks protect structural changes.
+  // No synchronization needed; size_ is atomic.
   [[nodiscard]] size_t Size() const final {
     return size_.load(std::memory_order_relaxed);
   }
@@ -119,13 +122,15 @@ class HashSetRefinable : public HashSetBase<T> {
   std::vector<std::vector<T>> buckets_;
   std::atomic<size_t> size_;
   std::hash<T> hasher_;
-  // One lock per bucket; size always equals buckets_.size().
-  std::vector<std::mutex> locks_;
-  // Serialize resizes and versioning; not used by normal ops.
-  std::mutex resize_mutex_;
-  std::atomic<size_t> version_;
-  std::atomic<bool> resizing_;
-  std::atomic<size_t> owner_tid_hash_;
+  std::vector<std::mutex> locks_; // One lock per bucket; size always equals buckets_.size().
+
+  std::mutex resize_mutex_; // Separate mutex exclusively for resizing.
+  std::atomic<size_t> version_; // version stamp for resize detection
+  std::atomic<bool> resizing_; // resizing flag
+  std::atomic<size_t> owner_tid_hash_; // resizing operation owner
+  
+  // Keep old lock arrays alive to avoid premature mutex destruction.
+  std::vector<std::vector<std::mutex>> old_lock_arrays_;
 
   static constexpr size_t kMinBuckets = 4;
   static constexpr double kMaxLoadFactor = 4.0;
@@ -137,63 +142,73 @@ class HashSetRefinable : public HashSetBase<T> {
 
   size_t Index(const T& elem) const { return hasher_(elem) % buckets_.size(); }
 
-  double LoadFactor() const {
-    return static_cast<double>(size_.load(std::memory_order_relaxed)) /
-           static_cast<double>(buckets_.size());
-  }
-
   void Resize(size_t new_capacity) {
-    // Ensure only one resizer runs; normal ops will wait (spin) while a
+    // Ensure only one resizer runs; normal ops will spin while a
     // resizer owned by another thread is active.
     std::unique_lock<std::mutex> resizer_lock(resize_mutex_);
 
     new_capacity = std::max(kMinBuckets, NormalizeCapacity(new_capacity));
+
+    // Check if another thread already resized to the desired capacity.
     if (new_capacity == buckets_.size()) {
-      return;  // Nothing to do.
+      return;
     }
 
-    // Publish that a resize is in progress and mark the owner.
     const size_t me = std::hash<std::thread::id>{}(std::this_thread::get_id());
     owner_tid_hash_.store(me, std::memory_order_release);
     resizing_.store(true, std::memory_order_release);
 
-    // Prepare new arrays.
     std::vector<std::vector<T>> new_buckets(new_capacity);
     std::vector<std::mutex> new_locks(new_capacity);
 
-    // Move each bucket under its own lock to avoid holding many locks.
+    // Acquire ALL locks from the old array before proceeding.
+    // This ensures no thread is in the middle of an operation on old buckets.
+    std::vector<std::unique_lock<std::mutex>> all_locks;
+    all_locks.reserve(locks_.size());
     for (size_t i = 0; i < locks_.size(); ++i) {
-      std::unique_lock<std::mutex> lk(locks_[i]);
+      all_locks.emplace_back(locks_[i]);
+    }
+
+    // With all old locks held, migrate elements to new buckets.
+    for (size_t i = 0; i < buckets_.size(); ++i) {
       auto& old_bucket = buckets_[i];
       for (auto& v : old_bucket) {
         size_t j = hasher_(v) % new_capacity;
         new_buckets[j].push_back(std::move(v));
       }
       old_bucket.clear();
-      // lk releases at end of iteration.
     }
 
-    // Publish new structure and version.
+    // Swap buckets and locks while still holding all old locks.
     buckets_.swap(new_buckets);
     locks_.swap(new_locks);
+
     version_.fetch_add(1, std::memory_order_acq_rel);
 
-    // Clear resize state.
+    for (auto& lk : all_locks) {
+      if (lk.owns_lock()) {
+        lk.unlock();
+      }
+    }
+    
     resizing_.store(false, std::memory_order_release);
     owner_tid_hash_.store(0, std::memory_order_release);
+
+    // Detach unique_locks from mutexes to avoid destructor issues.
+    for (auto& lk : all_locks) {
+      lk.release();
+    }
+    all_locks.clear();
+    
+    // Move old locks to storage to keep them alive (they're now in new_locks).
+    // This prevents premature mutex destruction.
+    old_lock_arrays_.push_back(std::move(new_locks));
   }
 
-  // Helpers for coordinating with resize without a global lock.
-  bool IsResizingByOther() const {
-    if (!resizing_.load(std::memory_order_acquire)) return false;
-    const size_t me = std::hash<std::thread::id>{}(std::this_thread::get_id());
-    return owner_tid_hash_.load(std::memory_order_acquire) != me;
-  }
-
+  // Simple spinlock optimization to pause on long waits.
   void WaitIfResizingByOther() const {
-    // Spin briefly while a different thread is resizing.
     int spins = 0;
-    while (IsResizingByOther()) {
+    while (resizing_.load(std::memory_order_acquire)) {
       if (++spins < 32) {
         // quick pause
       } else {

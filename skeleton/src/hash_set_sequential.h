@@ -10,14 +10,15 @@
 
 #include "src/hash_set_base.h"
 
+// All operations share the same lock; inefficient but simple.
 template <typename T>
 class HashSetSequential : public HashSetBase<T> {
  public:
   explicit HashSetSequential(size_t initial_capacity)
-      // Ensure at least kMinBuckets buckets to avoid modulo-by-zero.
       : buckets_(
             std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
         size_(0) {}
+
   // Returns true if elem was newly inserted.
   bool Add(T elem) final {
     size_t i = Index(elem);
@@ -33,6 +34,7 @@ class HashSetSequential : public HashSetBase<T> {
     }
     return true;
   }
+
   // Returns true if elem existed and was removed.
   bool Remove(T elem) final {
     size_t i = Index(elem);
