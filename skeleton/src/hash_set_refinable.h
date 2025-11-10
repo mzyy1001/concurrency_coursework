@@ -1,8 +1,8 @@
 #ifndef HASH_SET_REFINABLE_H
 #define HASH_SET_REFINABLE_H
 
-#include <algorithm>   // std::find
-#include <atomic>      // std::atomic
+#include <algorithm>  // std::find
+#include <atomic>     // std::atomic
 #include <cassert>
 #include <cstddef>     // size_t
 #include <functional>  // std::hash
@@ -22,10 +22,10 @@ class HashSetRefinable : public HashSetBase<T> {
       : buckets_(
             std::max<size_t>(NormalizeCapacity(initial_capacity), kMinBuckets)),
         size_(0),
-  locks_(buckets_.size()),
-  version_(0),
-  resizing_(false),
-  owner_tid_hash_(0) {}
+        locks_(buckets_.size()),
+        version_(0),
+        resizing_(false),
+        owner_tid_hash_(0) {}
 
   // Insert by locking the bucket; retry if a resize intervenes.
   bool Add(T elem) final {
@@ -55,7 +55,8 @@ class HashSetRefinable : public HashSetBase<T> {
       break;
     }
 
-    // Estimate load factor using the capacity we operated under to trigger resizes.
+    // Estimate load factor using the capacity we operated under to trigger
+    // resizes.
     double lf = static_cast<double>(size_.load(std::memory_order_relaxed)) /
                 static_cast<double>(used_cap);
     if (!resizing_.load(std::memory_order_acquire) && lf > kMaxLoadFactor) {
@@ -122,13 +123,14 @@ class HashSetRefinable : public HashSetBase<T> {
   std::vector<std::vector<T>> buckets_;
   std::atomic<size_t> size_;
   std::hash<T> hasher_;
-  std::vector<std::mutex> locks_; // One lock per bucket; size always equals buckets_.size().
+  std::vector<std::mutex>
+      locks_;  // One lock per bucket; size always equals buckets_.size().
 
-  std::mutex resize_mutex_; // Separate mutex exclusively for resizing.
-  std::atomic<size_t> version_; // version stamp for resize detection
-  std::atomic<bool> resizing_; // resizing flag
-  std::atomic<size_t> owner_tid_hash_; // resizing operation owner
-  
+  std::mutex resize_mutex_;      // Separate mutex exclusively for resizing.
+  std::atomic<size_t> version_;  // version stamp for resize detection
+  std::atomic<bool> resizing_;   // resizing flag
+  std::atomic<size_t> owner_tid_hash_;  // resizing operation owner
+
   // Keep old lock arrays alive to avoid premature mutex destruction.
   std::vector<std::vector<std::mutex>> old_lock_arrays_;
 
@@ -190,7 +192,7 @@ class HashSetRefinable : public HashSetBase<T> {
         lk.unlock();
       }
     }
-    
+
     resizing_.store(false, std::memory_order_release);
     owner_tid_hash_.store(0, std::memory_order_release);
 
@@ -199,7 +201,7 @@ class HashSetRefinable : public HashSetBase<T> {
       lk.release();
     }
     all_locks.clear();
-    
+
     // Move old locks to storage to keep them alive (they're now in new_locks).
     // This prevents premature mutex destruction.
     old_lock_arrays_.push_back(std::move(new_locks));

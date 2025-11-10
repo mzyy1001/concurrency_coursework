@@ -27,14 +27,14 @@ class HashSetStriped : public HashSetBase<T> {
       size_t cap = buckets_.size();
       size_t i = Index(elem);
       size_t stripe = StripeOfBucket(i);
-      
+
       std::unique_lock<std::mutex> lk(locks_[stripe]);
-      
+
       // Check if resize happened between computing index and acquiring lock.
       if (cap != buckets_.size()) {
         continue;
       }
-      
+
       auto& b = buckets_[i];
       if (std::find(b.begin(), b.end(), elem) != b.end()) {
         return false;
@@ -43,7 +43,7 @@ class HashSetStriped : public HashSetBase<T> {
       size_.fetch_add(1, std::memory_order_relaxed);
       break;
     }
-    
+
     if (LoadFactor() > kMaxLoadFactor) {
       Resize(buckets_.size() * 2);
     }
@@ -56,14 +56,14 @@ class HashSetStriped : public HashSetBase<T> {
       size_t cap = buckets_.size();
       size_t i = Index(elem);
       size_t stripe = StripeOfBucket(i);
-      
+
       std::unique_lock<std::mutex> lk(locks_[stripe]);
-      
+
       // Check if resize happened between computing index and acquiring lock.
       if (cap != buckets_.size()) {
         continue;
       }
-      
+
       auto& b = buckets_[i];
       auto it = std::find(b.begin(), b.end(), elem);
       if (it == b.end()) {
@@ -73,7 +73,7 @@ class HashSetStriped : public HashSetBase<T> {
       size_.fetch_sub(1, std::memory_order_relaxed);
       break;
     }
-    
+
     if (LoadFactor() < 1.0 && buckets_.size() > kMinBuckets) {
       Resize(buckets_.size() / 2);
     }
@@ -86,14 +86,14 @@ class HashSetStriped : public HashSetBase<T> {
       size_t cap = buckets_.size();
       size_t i = Index(elem);
       size_t stripe = StripeOfBucket(i);
-      
+
       std::unique_lock<std::mutex> lk(locks_[stripe]);
-      
+
       // Check if resize happened between computing index and acquiring lock.
       if (cap != buckets_.size()) {
         continue;
       }
-      
+
       auto& b = buckets_[i];
       return std::find(b.begin(), b.end(), elem) != b.end();
     }
@@ -131,19 +131,19 @@ class HashSetStriped : public HashSetBase<T> {
 
   void Resize(size_t new_capacity) {
     std::unique_lock<std::mutex> resize_lock(resize_mutex_);
-    
+
     new_capacity = std::max(kMinBuckets, NormalizeCapacity(new_capacity));
-    
+
     // Check if another thread already resized.
     if (new_capacity == buckets_.size()) {
       return;
     }
-    
+
     // Acquire all stripe locks in order.
     for (auto& lock : locks_) {
       lock.lock();
     }
-    
+
     std::vector<std::vector<T>> new_buckets(new_capacity);
     for (auto& bucket : buckets_) {
       for (auto& v : bucket) {
@@ -152,7 +152,7 @@ class HashSetStriped : public HashSetBase<T> {
       }
     }
     buckets_.swap(new_buckets);
-    
+
     // Release all stripe locks.
     for (auto& lock : locks_) {
       lock.unlock();
